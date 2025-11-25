@@ -6,9 +6,8 @@ import traceback
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os
-import json
 from collections import Counter
-from simulacao import SimulacaoClinica, carregar_pacientes_json, calcular_estatisticas, Paciente, TEMPO_MEDIO_POR_ESP
+from simulacao import SimulacaoClinica, carregar_pacientes_json, calcular_estatisticas, Paciente
 
 
 # --- 1. FUNÇÕES DE PLOTAGEM (Melhoradas e Essenciais) ---
@@ -82,7 +81,7 @@ def grafico_fila_vs_taxa_frame(frame, taxas, medias_fila):
     return embed_plot_on_frame(frame, fig)
 
 def grafico_ocupacao_medicos_bar(frame, med_stats):
-    # Este gráfico é ÚTIL (Métrica por Médico), mas foi simplificado para evitar a confusão estética
+    # Gráfico de Ocupação Média por Médico (Métrica por Médico)
     OCUPADO_COR = "#00A86B" 
     ids = [f"Médico {i+1}\n({s['especialidade'].title()})" for i, s in med_stats.items()]
     ocupacoes = [s['ocupacao_percent'] for s in med_stats.values()]
@@ -100,25 +99,35 @@ class App(tk.Tk):
         super().__init__()
         self.title("Simulação Clínica - Versão Final")
         self.geometry("1100x720")
-        # --- FIX TÉCNICO: Ligação de métodos antes do build ---
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+    
+        # --- FIX: Métodos ligados a self para evitar AttributeError ---
         self.iniciar_simulacao = self._iniciar_simulacao
         self.parar_animacao = self._parar_animacao
         self.abrir_graficos_abas = self._abrir_graficos_abas
         self.carregar_dataset_dialog = self._carregar_dataset_dialog
         self.comparar_taxas = self._comparar_taxas
-        
+
         self.initial_params = initial_params
         self.dataset_file = initial_params.get("dataset_file", "pessoas.json")
-        self.pacientes = carregar_pacientes_json(ficheiro=self.dataset_file)
+        
+        # FIX DEFINITIVO: Inicializa pacientes como lista vazia. O carregamento é adiado.
+        self.pacientes = [] 
+        
         self.sim = None
         self.anim_after = None
         self.minuto_atual = 0
         self.comparacao_taxas_data = None 
+        
+        # Lista de especialidades fixas (sem tempo de serviço associado)
+        self.all_specialties = ["clinica_geral", "pneumologia", "endocrinologia", "cardiologia", "ortopedia", "otorrino", "geriatria"]
         self.doctor_specialties = {str(i): "clinica_geral" for i in range(self.initial_params.get("num_doctors", 3))} 
 
         self._build_ui()
         self._apply_initial_config(initial_params)
-        self.lbl_dataset = tk.Label(self.left_frame, text=f"Dataset: {os.path.basename(self.dataset_file)} ({len(self.pacientes)} pessoas)", font=("Segoe UI", 8))
+        
+        # O label inicial reflete que não há dados carregados
+        self.lbl_dataset = tk.Label(self.left_frame, text=f"Dataset: NENHUM CARREGADO (0 pessoas)", font=("Segoe UI", 8))
         self.lbl_dataset.pack(pady=(5, 5))
 
 
@@ -208,11 +217,17 @@ class App(tk.Tk):
         config_win.title("Configurar Especialidades")
         
         row_num = 0
-        all_specialties = sorted(list(TEMPO_MEDIO_POR_ESP.keys())) 
+        all_specialties = self.all_specialties
         
         self.specialty_comboboxes = {} 
         
-        for i in range(int(self.ent_medicos.get())):
+        try:
+            num_medicos = int(self.ent_medicos.get())
+        except ValueError:
+            messagebox.showwarning("Aviso", "Número de médicos inválido.")
+            return
+
+        for i in range(num_medicos):
             doc_id = str(i)
             
             tk.Label(config_win, text=f"Médico {i+1}").grid(row=row_num, column=0, padx=5, pady=5, sticky="w")
@@ -244,15 +259,16 @@ class App(tk.Tk):
         frm_input.pack(fill="x", padx=10, pady=10)
         
         self.search_vars = {
-            'nome': tk.StringVar(), 'idade': tk.StringVar(), 'sexo': tk.StringVar(), 'keyword': tk.StringVar()
+            'nome': tk.StringVar(), 'idade': tk.StringVar(), 'sexo': tk.StringVar(), 'id_cc': tk.StringVar()
         }
         
-        # Labels e Entradas de Pesquisa Filtrada
-        ttk.Label(frm_input, text="Nome (parcial):").grid(row=0, column=0, sticky="w"); ttk.Entry(frm_input, textvariable=self.search_vars['nome']).grid(row=0, column=1, sticky="we", padx=5)
-        ttk.Label(frm_input, text="Idade (exata/parcial):").grid(row=1, column=0, sticky="w"); ttk.Entry(frm_input, textvariable=self.search_vars['idade']).grid(row=1, column=1, sticky="we", padx=5)
-        ttk.Label(frm_input, text="Sexo (exato):").grid(row=0, column=2, sticky="w"); ttk.Combobox(frm_input, values=['', 'masculino', 'feminino', 'outro'], textvariable=self.search_vars['sexo'], state="readonly").grid(row=0, column=3, sticky="we", padx=5)
-        ttk.Label(frm_input, text="Keyword (Histórico):").grid(row=1, column=2, sticky="w"); ttk.Entry(frm_input, textvariable=self.search_vars['keyword']).grid(row=1, column=3, sticky="we", padx=5)
-
+        # Labels e Entradas de Pesquisa Filtrada (sem "(parcial)")
+        ttk.Label(frm_input, text="Nome:").grid(row=0, column=0, sticky="w"); ttk.Entry(frm_input, textvariable=self.search_vars['nome']).grid(row=0, column=1, sticky="we", padx=5)
+        ttk.Label(frm_input, text="Idade:").grid(row=1, column=0, sticky="w"); ttk.Entry(frm_input, textvariable=self.search_vars['idade']).grid(row=1, column=1, sticky="we", padx=5)
+        
+        ttk.Label(frm_input, text="CC/BI:").grid(row=0, column=2, sticky="w"); ttk.Entry(frm_input, textvariable=self.search_vars['id_cc']).grid(row=0, column=3, sticky="we", padx=5)
+        ttk.Label(frm_input, text="Sexo:").grid(row=1, column=2, sticky="w"); ttk.Combobox(frm_input, values=['', 'masculino', 'feminino', 'outro'], textvariable=self.search_vars['sexo'], state="readonly").grid(row=1, column=3, sticky="we", padx=5)
+        
         tk.Button(frm_input, text="Pesquisar", command=lambda: self._perform_search(listbox_results)).grid(row=2, column=0, columnspan=4, pady=10)
 
         listbox_results = tk.Listbox(search_win, width=100, height=20, font=("Courier", 10))
@@ -277,8 +293,8 @@ class App(tk.Tk):
             details_win.title(f"Detalhes Clínicos do Paciente: {patient.nome}")
             details_win.geometry("500x450")
             
-            p_for_sim = {k: getattr(patient, k) for k in ['idade', 'descrição', 'religiao']}
-            # A lógica de detecção de prioridade foi corrigida em simulacao.py
+            # Reutiliza o motor de prioridade da simulação
+            p_for_sim = {k: getattr(patient, k) for k in ['idade', 'descrição', 'religiao', 'atributos']}
             _, prioridade_str, motivo_str = SimulacaoClinica._detectar_doenca_e_prioridade(SimulacaoClinica(pacientes=[]), p_for_sim)
             
             
@@ -286,7 +302,7 @@ class App(tk.Tk):
             
             details_text = f"--- DADOS PESSOAIS ---\n"
             details_text += f"{'Nome:':<15} {patient.nome}\n"
-            details_text += f"{'ID:':<15} {patient.id}\n"
+            details_text += f"{'CC/BI (ID):':<15} {patient.id}\n" # Inclui CC/BI (ID)
             details_text += f"{'Idade:':<15} {patient.idade}\n"
             details_text += f"{'Sexo:':<15} {patient.sexo}\n"
             details_text += f"{'Profissão:':<15} {patient.profissao}\n"
@@ -294,8 +310,8 @@ class App(tk.Tk):
             details_text += f"{'Distrito:':<15} {patient.morada.get('distrito', 'N/A')}\n\n"
             
             details_text += f"--- AVALIAÇÃO CLÍNICA (SIMULAÇÃO) ---\n"
-            details_text += f"{'PRIORIDADE FILA:':<20} {prioridade_str.upper()}\n"
-            details_text += f"{'MOTIVO CLÍNICO:':<20} {motivo_str}\n" # Inclui notas de risco como transfusão
+            details_text += f"{'PRIORIDADE FILA:':<20} NORMAL\n" # Prioridade é sempre NORMAL
+            details_text += f"{'NOTAS CLÍNICAS:':<20} {motivo_str}\n" # Notas Clínicas
             
             atributos = patient.atributos or {}
             fumador_status = "Sim" if atributos.get('fumador') else "Não"
@@ -322,33 +338,42 @@ class App(tk.Tk):
         query_nome = self.search_vars['nome'].get().lower()
         query_idade = self.search_vars['idade'].get().lower()
         query_sexo = self.search_vars['sexo'].get().lower()
-        query_keyword = self.search_vars['keyword'].get().lower()
+        query_id_cc = self.search_vars['id_cc'].get().lower()
         
         found_count = 0
         for p in self.pacientes:
             p_data = p.__dict__
             
+            is_match = True
+            
             # Filtro 1: Nome (Contém a string)
-            if query_nome and query_nome not in str(p_data.get('nome', '')).lower(): continue
+            if query_nome and query_nome not in str(p_data.get('nome', '')).lower(): 
+                is_match = False
             
             # Filtro 2: Idade (Contém a string)
-            if query_idade and query_idade not in str(p_data.get('idade', '')): continue
+            if is_match and query_idade and query_idade not in str(p_data.get('idade', '')): 
+                is_match = False
 
             # Filtro 3: Sexo (EXATO)
-            if query_sexo and str(p_data.get('sexo', '')).lower() != query_sexo: continue
+            if is_match and query_sexo and str(p_data.get('sexo', '')).lower() != query_sexo: 
+                is_match = False
+                
+            # Filtro 4: CC/BI (Contém a string)
+            if is_match and query_id_cc and query_id_cc not in str(p.id).lower():
+                is_match = False
             
-            # Filtro 4: Keyword/Histórico
-            if query_keyword and query_keyword not in str(p_data.get('descrição', '')).lower(): continue
+            # Se todos os filtros passarem
+            if is_match:
+                # Determina a prioridade e motivo (para exibir as notas clínicas)
+                p_for_sim = {k: getattr(p, k) for k in ['idade', 'descrição', 'religiao', 'atributos']}
+                _, prioridade_str, motivo_str = SimulacaoClinica._detectar_doenca_e_prioridade(SimulacaoClinica(pacientes=[]), p_for_sim)
 
-            # Determina a prioridade e motivo (para exibir as notas clínicas)
-            p_for_sim = {k: getattr(p, k) for k in ['idade', 'descrição', 'religiao']}
-            _, prioridade_str, motivo_str = SimulacaoClinica._detectar_doenca_e_prioridade(SimulacaoClinica(pacientes=[]), p_for_sim)
-
-            morada = p_data.get('morada', {}); distrito = morada.get('distrito', '?')
-            
-            line = f"{p.id:<3} | {p.nome:<20} | {p.idade:<5} | {p.sexo:<5} | {distrito:<15} | {prioridade_str[:4].upper():<4} | {motivo_str[:35]:<35}"
-            listbox_results.insert(tk.END, line)
-            found_count += 1
+                morada = p_data.get('morada', {}); distrito = morada.get('distrito', '?')
+                
+                # A prioridade é sempre "NORMAL" na exibição
+                line = f"{p.id:<3} | {p.nome:<20} | {p.idade:<5} | {p.sexo:<5} | {distrito:<15} | {'NORM':<4} | {motivo_str[:35]:<35}"
+                listbox_results.insert(tk.END, line)
+                found_count += 1
         
         if found_count == 0:
             listbox_results.insert(tk.END, "Nenhum paciente encontrado com os filtros especificados.")
@@ -368,6 +393,7 @@ class App(tk.Tk):
                     self.lbl_dataset.config(text=f"Dataset: {os.path.basename(self.dataset_file)} ({len(self.pacientes)} pessoas)")
                     messagebox.showinfo("Sucesso", f"{len(self.pacientes)} pacientes carregados de {os.path.basename(filepath)}.")
                 else:
+                    # Avisa se o ficheiro estiver vazio/inválido
                     messagebox.showwarning("Aviso", f"O ficheiro {os.path.basename(filepath)} está vazio ou com formato inválido.")
             except Exception as e:
                 messagebox.showerror("Erro de Leitura", f"Não foi possível ler o ficheiro: {e}")
@@ -382,6 +408,11 @@ class App(tk.Tk):
             messagebox.showwarning("Aviso","Insira valores válidos!"); valid_params = False
 
         if valid_params:
+            # BLOQUEIO: É obrigatório carregar um dataset
+            if not self.pacientes or len(self.pacientes) == 0:
+                messagebox.showwarning("Aviso", "Não é possível iniciar. É **obrigatório** carregar um Dataset JSON válido (ficheiro de pacientes) antes de simular.")
+                return
+
             self.sim = SimulacaoClinica(lambda_rate=lambda_rate, num_doctors=num_doctors,
                                         service_distribution=dist, mean_service_time=tempo,
                                         simulation_time=duracao, pacientes=self.pacientes,
@@ -396,25 +427,35 @@ class App(tk.Tk):
     def _run_sim_thread(self):
         try:
             self.sim.run()
+            # Se a simulação abortou em simulacao.py (sem pacientes), não calcula stats
+            if not self.sim.pacientes: 
+                self.after(50, lambda: self._mostrar_stats_texto("Simulação abortada: Dataset de pacientes vazio."))
+                return
+
             stats = calcular_estatisticas(self.sim)
             
-            # --- Melhoria Estética das Estatísticas ---
-            med_stats_str = "\n--- Métricas por Médico ---\n"
+            # NOVO FORMATO DE ESTATÍSTICAS
+            texto = "📊 ESTATÍSTICAS GERAIS\n"
+            texto += "--------------------------------------\n"
+            texto += f"Pacientes Atendidos: {stats['doentes_atendidos']}\n"
+            texto += f"Ocupação Média Médicos: {stats['ocupacao_media_medicos']:.2f}%\n\n"
+            
+            texto += "⏱️ TEMPOS (Minutos)\n"
+            texto += f"T. Médio Espera: {stats['tempo_medio_espera']:.2f} | Var: {stats['variancia_tempo_espera']:.2f}\n"
+            texto += f"T. Médio Consulta: {stats['tempo_medio_consulta']:.2f} | Var: {stats['variancia_tempo_consulta']:.2f}\n"
+            texto += f"T. Médio Total Clínica: {stats['tempo_medio_na_clinica']:.2f}\n\n"
+            
+            texto += "🔢 FILA (Pacientes)\n"
+            texto += f"Fila Média: {stats['fila_media']:.2f} | Fila Máxima: {stats['fila_max']}\n\n"
+            
+            med_stats_str = "🧑‍⚕️ MÉTRICAS POR MÉDICO\n"
+            med_stats_str += "--------------------------------------\n"
             for mid, m_stats in stats.get("stats_por_medico", {}).items():
                 med_stats_str += f"Médico {mid+1} ({m_stats['especialidade'].title()}):\n"
-                med_stats_str += f"  - Atendidos: {m_stats['num_atendidos']:<5} Ocupação: {m_stats['ocupacao_percent']:.1f}%\n"
+                med_stats_str += f"  - Atendidos: {m_stats['num_atendidos']:<5} | Ocupação: {m_stats['ocupacao_percent']:.1f}%\n"
                 med_stats_str += f"  - T. Consulta Médio: {m_stats['media_consulta']:.2f} min\n"
-
-            texto_geral = "Estatísticas Gerais:\n"
-            texto_geral += f"T. Médio Espera: {stats['tempo_medio_espera']:.2f} min\n"
-            texto_geral += f"Variância Espera: {stats['variancia_tempo_espera']:.2f}\n"
-            texto_geral += f"T. Médio Consulta: {stats['tempo_medio_consulta']:.2f} min\n"
-            texto_geral += f"Variância Consulta: {stats['variancia_tempo_consulta']:.2f}\n"
-            texto_geral += f"T. Médio Clínica: {stats['tempo_medio_na_clinica']:.2f} min\n"
-            texto_geral += f"Fila Média: {stats['fila_media']:.2f} | Fila Máxima: {stats['fila_max']}\n"
-            texto_geral += f"Atendidos: {stats['doentes_atendidos']}\n"
-            texto_geral += f"Ocupação Média: {stats['ocupacao_media_medicos']:.2f}%\n"
-            texto = texto_geral + med_stats_str
+                
+            texto += med_stats_str
             
             self.after(50, lambda: self._mostrar_stats_texto(texto))
         except Exception as e:
@@ -428,8 +469,12 @@ class App(tk.Tk):
     def animar(self):
         try:
             if not self.sim: self.after(200, self.animar); return
+            # Se a simulação abortou, pára a animação
+            if hasattr(self.sim, "pacientes") and not self.sim.pacientes: 
+                self.lbl_paciente.config(text="Simulação abortada: Sem pacientes de dataset."); self.parar_animacao(); return
+                
             if not hasattr(self.sim, "fila_sizes") or not hasattr(self.sim, "ocupacao_medicos"): self.after(200, self.animar); return
-            if self.minuto_atual >= len(self.sim.fila_sizes): self.lbl_paciente.config(text="Simulação terminada."); return
+            if self.minuto_atual >= len(self.sim.fila_sizes): self.lbl_paciente.config(text="Simulação terminada."); self.parar_animacao(); return
 
             self.canvas.delete("all")
             fila_size = self.sim.fila_sizes[self.minuto_atual] if self.minuto_atual < len(self.sim.fila_sizes) else 0
@@ -451,21 +496,32 @@ class App(tk.Tk):
                 try: inicio = int(ev.get("minuto_inicio", 0)); dur = float(ev.get("duracao", 0.0)); fim = inicio + int(np.ceil(dur))
                 except Exception: is_valid_event = False 
                 if is_valid_event and inicio <= self.minuto_atual < fim:
-                    medico_raw = ev.get("medico", None); nome = ev.get("paciente") or "Paciente desconhecido"
+                    medico_raw = ev.get("medico", None); 
+                    
+                    # Apenas mostra o nome
+                    nome_completo = ev.get("paciente") or "Paciente desconhecido"
+                    nome_puro = nome_completo.split(' (')[0]
+                    
                     is_valid_medico = True
                     try: m_idx = int(medico_raw); 
                     except Exception: is_valid_medico = False 
-                    if is_valid_medico: nomes_por_medico[m_idx] = nome
+                    if is_valid_medico: nomes_por_medico[m_idx] = nome_puro
 
             OCUPADO_COR = "#00A86B" 
+            pacientes_em_consulta = []
             for i in range(num_doctors):
                 y = top_med_y + i*(box_h+20)
-                color = OCUPADO_COR if i < ocup_num else "#adb5bd" 
+                
+                nome_atual = nomes_por_medico.get(i)
+                color = OCUPADO_COR if nome_atual is not None else "#adb5bd" 
+                
                 self.canvas.create_rectangle(left_med_x, y, left_med_x+box_w, y+box_h, fill=color, outline="black")
                 self.canvas.create_text(left_med_x+box_w+10, y+box_h/2, anchor="w", text=f"Médico {i+1} ({self.doctor_specialties.get(str(i), 'geral').title()})", font=("Arial", 11))
                 
-                nome_atual = nomes_por_medico.get(i)
-                if nome_atual: self.canvas.create_text(left_med_x+6, y+box_h/2, anchor="w", text=nome_atual, font=("Arial", 10, "bold"), fill="white")
+                if nome_atual: 
+                    self.canvas.create_text(left_med_x+6, y+box_h/2, anchor="w", text=nome_atual, font=("Arial", 10, "bold"), fill="white")
+                    medico_str = f"Médico {i + 1}"
+                    pacientes_em_consulta.append(f"{medico_str}: {nome_atual}")
 
             atendidos = getattr(self.sim, "doentes_atendidos", 0)
             tempos_espera = getattr(self.sim, "tempos_espera", []) or []
@@ -475,18 +531,7 @@ class App(tk.Tk):
             txt = f"Minuto: {self.minuto_atual} | Atendidos: {atendidos} | Tempo médio espera: {tempo_esp:.2f} min | Tempo médio consulta: {tempo_cons:.2f} min"
             self.canvas.create_text(30, 380, anchor="w", text=txt, font=("Arial", 10))
 
-            pacientes_em_consulta = []
-            for ev in eventos:
-                inicio = 0; dur = 0.0; fim = 0; is_valid_event = True
-                try: inicio = int(ev.get("minuto_inicio", 0)); dur = float(ev.get("duracao", 0.0)); fim = inicio + int(np.ceil(dur))
-                except Exception: is_valid_event = False
-                if is_valid_event and inicio <= self.minuto_atual < fim:
-                    nome = ev.get("paciente") or "Paciente desconhecido"; medico_raw = ev.get("medico", None)
-                    medico_str = "Médico ?"
-                    try: medico_idx = int(medico_raw); medico_str = f"Médico {medico_idx + 1}"
-                    except Exception: medico_str = "Médico ?"
-                    pacientes_em_consulta.append(f"{medico_str}: {nome}")
-
+            # Atualiza o label de Paciente Atual apenas com o nome
             if pacientes_em_consulta: texto = "\n".join(pacientes_em_consulta)
             else: texto = "— nenhum paciente em consulta neste minuto —"
 
@@ -500,11 +545,17 @@ class App(tk.Tk):
             self.after(500, self.animar)
     
     def _parar_animacao(self):
-        if self.anim_after: self.after_cancel(self.anim_after); self.anim_after = None
+        if self.anim_after: self.after_cancel(self.anim_after)
+        self.anim_after = None
 
     def _abrir_graficos_abas(self):
         should_proceed = True
         if not self.sim: messagebox.showwarning("Aviso", "Execute a simulação antes de abrir gráficos."); should_proceed = False
+        
+        # Verifica se a simulação correu sem abortar
+        if hasattr(self.sim, "pacientes") and not self.sim.pacientes:
+            messagebox.showwarning("Aviso", "A simulação não gerou dados. Por favor, inicie a simulação com um dataset carregado.")
+            should_proceed = False
 
         if should_proceed:
             win = tk.Toplevel(self)
@@ -521,12 +572,13 @@ class App(tk.Tk):
             
             tab_metricas = tk.Frame(notebook); notebook.add(tab_metricas, text="Métricas Chave")
             
-            # Gráficos Úteis
             frame_utilizacao = tk.Frame(tab_metricas); frame_utilizacao.pack(side="left", fill="both", expand=True)
-            grafico_ocupacao_medicos_bar(frame_utilizacao, self.sim.stats_por_medico)
+            if hasattr(self.sim, "stats_por_medico"):
+                grafico_ocupacao_medicos_bar(frame_utilizacao, self.sim.stats_por_medico)
+            else:
+                tk.Label(frame_utilizacao, text="Simulação não gerou métricas por médico.").pack()
             
             frame_rho = tk.Frame(tab_metricas); frame_rho.pack(side="right", fill="both", expand=True)
-            # gráfico_utilizacao_rho(frame_rho, self.sim) # Retirado a pedido
 
             tab3 = tk.Frame(notebook); notebook.add(tab3, text="T. Espera"); grafico_tempo_espera_frame(tab3, self.sim.tempos_espera)
             tab4 = tk.Frame(notebook); notebook.add(tab4, text="T. Clínica"); grafico_tempo_total_frame(tab4, self.sim.tempos_clinica)
@@ -547,6 +599,11 @@ class App(tk.Tk):
         self.abrir_graficos_abas() 
         
     def _comparar_taxas(self):
+        # BLOQUEIO: É obrigatório carregar um dataset
+        if not self.pacientes or len(self.pacientes) == 0:
+            messagebox.showwarning("Aviso", "Não é possível comparar taxas. É **obrigatório** carregar um Dataset JSON válido (ficheiro de pacientes).")
+            return
+            
         taxas = list(range(10, 31, 5)); medias = []
         
         progresso = tk.Toplevel(self); progresso.title("A executar comparações...")
@@ -562,7 +619,11 @@ class App(tk.Tk):
                                         arrival_pattern="homogeneous",
                                         doctor_specialties=self.doctor_specialties) 
             sim_temp.run()
-            medias.append( sum(sim_temp.fila_sizes)/len(sim_temp.fila_sizes) if sim_temp.fila_sizes else 0 )
+            # Se a simulação correu, calcula a média da fila
+            if sim_temp.fila_sizes:
+                medias.append( sum(sim_temp.fila_sizes)/len(sim_temp.fila_sizes) )
+            else:
+                medias.append(0) 
             
         self.comparacao_taxas_data = (taxas, medias)
 
