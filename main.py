@@ -52,7 +52,8 @@ def parse_cli_arguments(config):
     if args.mean_service_time is not None: final_config['mean_service_time'] = args.mean_service_time
     if args.simulation_time is not None: final_config['simulation_time'] = args.simulation_time
     if args.arrival_pattern is not None: final_config['arrival_pattern'] = args.arrival_pattern
-    if args.dataset_file is not None: final_config['dataset_file'] = args.dataset_file
+    # Mantém o dataset file (necessário para o App)
+    if args.dataset_file is not None: final_config['dataset_file'] = args.dataset_file 
     
     return final_config
 
