@@ -8,7 +8,6 @@ import math
 from typing import List, Dict, Any, Optional, Tuple
 
 # --- CONSTANTES GLOBAIS ---
-IDADE_URGENTE = 75
 FALLBACK_ESP = "clinica_geral"
 CHEGADA = "CHEGADA"
 SAIDA = "SAIDA"
@@ -22,11 +21,6 @@ DOENCA_TO_ESP = {
     "rinite": "otorrino", "sinusite": "otorrino", "geriatria_cronica": "geriatria",
 }
 
-TEMPO_MEDIO_POR_ESP = {
-    "clinica_geral": 12.0, "pneumologia": 18.0, "endocrinologia": 20.0,
-    "cardiologia": 22.0, "ortopedia": 25.0, "otorrino": 15.0, "geriatria": 18.0,
-}
-
 
 # --- UTILS E CÁLCULOS ---
 
@@ -37,7 +31,7 @@ class Paciente:
         self.nome = nome
         self.idade = idade
         self.profissao = profissao
-        self.prioridade = prioridade
+        self.prioridade = "normal" 
         self.sexo = kwargs.get('sexo')
         self.morada = kwargs.get('morada', {}) 
         self.descrição = kwargs.get('descrição')
@@ -49,7 +43,7 @@ class Paciente:
         return f"{self.nome} ({self.prioridade})"
 
 def carregar_pacientes_json(ficheiro: str, limite: Optional[int] = None) -> List[Paciente]:
-    """Carrega todos os pacientes de um ficheiro JSON, sem limite por defeito."""
+    """Carrega todos os pacientes de um ficheiro JSON, procurando por 'id' ou 'cc'."""
     if not os.path.exists(ficheiro):
         print(f"⚠️ Ficheiro {ficheiro} não encontrado. Retornando lista vazia.")
         return []
@@ -70,13 +64,16 @@ def carregar_pacientes_json(ficheiro: str, limite: Optional[int] = None) -> List
         profissao = str(p.get("profissao", "")).lower()
         is_doctor = "médico" in profissao or "medicina" in profissao
         
+        # Tenta obter ID de 'id' ou 'cc'
+        patient_id = p.get("id") or p.get("cc") or (i + 1)
+        
         if not is_doctor:
             pacientes.append(Paciente(
-                id=str(p.get("id", i + 1)),
+                id=str(patient_id),
                 nome=p.get("nome", f"Pessoa {i+1}"),
                 idade=p.get("idade"),
                 profissao=p.get("profissao"),
-                prioridade=("urgente" if random.random() < 0.15 else "normal"),
+                prioridade="normal", 
                 sexo=p.get('sexo'),
                 morada=p.get('morada'),
                 descrição=p.get('descrição'),
@@ -85,6 +82,7 @@ def carregar_pacientes_json(ficheiro: str, limite: Optional[int] = None) -> List
                 desportos=p.get('desportos')
                 ))
 
+    # Importante: A ordem na lista define a ordem de chegada (e o limite de pacientes para simulação)
     random.shuffle(pacientes)
     if limite is not None:
         pacientes = pacientes[:limite]
@@ -102,14 +100,14 @@ def gera_tempo_consulta(media, distribuicao="exponential", rng: Optional[np.rand
     val = 0.0
     if distribuicao in ("exponential", "exponencial"):
         if rng is None: val = float(np.random.exponential(scale=media))
-        else: val = float(rng.exponential(scale=media))
+        else: val = float(np.random.exponential(scale=media))
     elif distribuicao == "normal":
         if rng is None: val = float(np.random.normal(loc=media, scale=0.2 * media))
-        else: val = float(rng.normal(loc=media, scale=0.2 * media))
+        else: val = float(np.random.normal(loc=media, scale=0.2 * media))
         val = max(0.1, val)
     elif distribuicao in ("uniform", "uniforme"):
         if rng is None: val = float(np.random.uniform(low=0.5 * media, high=1.5 * media))
-        else: val = float(rng.uniform(low=0.5 * media, high=1.5 * media))
+        else: val = float(np.random.uniform(low=0.5 * media, high=1.5 * media))
     else: raise ValueError("Distribuição inválida")
     return val
 
@@ -174,7 +172,7 @@ class SimulacaoClinica:
         self.seed = kwargs.get('seed')
         self.arrival_pattern = kwargs.get('arrival_pattern', "homogeneous")
         self.arrival_profile = kwargs.get('arrival_profile')
-        self.pacientes = kwargs.get('pacientes', [])
+        self.pacientes: List[Paciente] = kwargs.get('pacientes', [])
         self.doctor_specialties = kwargs.get('doctor_specialties', {})
         self.reset()
 
@@ -200,6 +198,7 @@ class SimulacaoClinica:
         self._inicio: Dict[str, float] = {}
         self._saida: Dict[str, float] = {}
         self._duracao: Dict[str, float] = {}
+        # O ID do paciente (pid) mapeia para o índice na lista self.pacientes
         self._pid_to_pidx: Dict[str, int] = {} 
 
         self._medicos: List[Dict[str, Any]] = []
@@ -218,13 +217,17 @@ class SimulacaoClinica:
             })
             i += 1
 
-        self._filas: Dict[str, Dict[str, List[str]]] = {}
+        # FIX: Fila simplificada, sem distinção de prioridade
+        self._filas: Dict[str, List[str]] = {} 
         self._pid_counter = 1
         
     def _gera_intervalo_chegada_homogeneo(self) -> float:
+        if not self.pacientes: return float('inf') 
         return gera_intervalo_tempo_chegada(self.lambda_rate, rng=self._rng)
 
     def _gera_chegadas_nonhomogeneous(self):
+        if not self.pacientes: return 
+        
         profile = self.arrival_profile
         if profile is None:
             profile = [
@@ -243,44 +246,39 @@ class SimulacaoClinica:
                 t = float(start_min)
                 taxa_min = lam / 60.0
                 
-                while t < end_min:
+                while t < end_min and pidx < len(self.pacientes):
                     intervalo = float(self._rng.exponential(1.0 / taxa_min))
                     t = t + intervalo
                     
-                    should_add_event = t < end_min
-                    
-                    if should_add_event:
+                    if t < end_min and pidx < len(self.pacientes):
                         pid = f"p{pid_ctr}"
                         pid_ctr += 1
                         self._chegada[pid] = t
                         heapq.heappush(self._heap, (t, next(self._counter), CHEGADA, pid))
-                        if pidx < len(self.pacientes):
-                            self._pid_to_pidx[pid] = pidx
-                            pidx += 1
-                        else:
-                            pid_map_skipped = True 
+                        self._pid_to_pidx[pid] = pidx
+                        pidx += 1
                         
         self._pid_counter = pid_ctr
 
     def _gera_chegadas_homogeneo(self):
+        if not self.pacientes: return 
+        
         t = float(self._gera_intervalo_chegada_homogeneo())
         pid_ctr = self._pid_counter
         pidx = 0
-        while t < self.simulation_time:
+        while t < self.simulation_time and pidx < len(self.pacientes):
             pid = f"p{pid_ctr}"
             pid_ctr += 1
             self._chegada[pid] = t
             heapq.heappush(self._heap, (t, next(self._counter), CHEGADA, pid))
-            if pidx < len(self.pacientes):
-                self._pid_to_pidx[pid] = pidx
-                pidx += 1
+            self._pid_to_pidx[pid] = pidx
+            pidx += 1
             t = t + float(self._gera_intervalo_chegada_homogeneo())
         self._pid_counter = pid_ctr
-
+    
     def _gera_tempo_consulta_local(self, especialidade: Optional[str], paciente_idx: Optional[int]) -> float:
+        # FIX: O tempo de serviço agora depende APENAS do input do utilizador (mean_service_time)
         mean = self.mean_service_time
-        if especialidade is not None and especialidade in TEMPO_MEDIO_POR_ESP:
-            mean = TEMPO_MEDIO_POR_ESP[especialidade]
         return gera_tempo_consulta(mean, self.service_distribution, rng=self._rng)
 
     def _detectar_doenca_e_prioridade(self, p: Dict[str, Any]) -> Tuple[str, str, str]:
@@ -290,44 +288,27 @@ class SimulacaoClinica:
             doenca = p.get("doenca", p.get("descrição")); 
             if isinstance(doenca, str): doenca = doenca.lower()
             
-            idade = p.get("idade") if isinstance(p.get("idade"), (int, float)) else None
-            
-            is_urgente = False
-            # 1. Prioridade: Idade/Quadro Clínico (Determina a posição na fila)
-            if isinstance(idade, (int, float)) and idade >= IDADE_URGENTE:
-                is_urgente = True; prioridade_motivo.append(f"Idade ({int(idade)} anos)")
-            
-            if doenca is not None:
-                if "canc" in doenca or "cancer" in doenca:
-                    is_urgente = True; prioridade_motivo.append(f"Quadro Clínico (Cancro)")
-                elif "angina" in doenca or "ataque cardíaco" in doenca:
-                    is_urgente = True; prioridade_motivo.append(f"Quadro Clínico (Cardíaco)")
-            
-            # 2. Nota Clínica: Religião/Outros (Informação médica crítica)
-            if str(p.get('religiao', '')).lower() == 'testemunhas de jeová': nota_clinica.append("Risco: Transfusão de Sangue")
+            # 1. Notas Clínicas/Alertas (sem implicar urgência na fila)
+            if str(p.get('religiao', '')).lower() == 'testemunhas de jeová': nota_clinica.append("Restrição de Transfusão de Sangue")
             if str(p.get('atributos', {}).get('fumador')).lower() == 'true': nota_clinica.append("Alerta: Fumador")
 
-                
-            if is_urgente: prioridade = "urgente"
+            # Prioridade de fila é sempre 'normal'
+            prioridade = "normal"
 
             if doenca is None or not doenca:
-                if isinstance(idade, (int, float)) and idade >= IDADE_URGENTE: doenca = "geriatria_cronica"
-                else: doenca = "virose"
+                doenca = "virose"
 
         else: doenca = "virose"
 
         if doenca is None or not doenca: doenca = "virose"
         
-        motivo_str = f"Prio: {'SIM' if prioridade == 'urgente' else 'NÃO'}"
-        if prioridade_motivo: motivo_str += f" ({', '.join(prioridade_motivo)})"
-        if nota_clinica: motivo_str += f" [! {', '.join(nota_clinica)}]"
+        # O motivo clínico agora é uma lista concisa de notas
+        motivo_str = f"{', '.join(prioridade_motivo + nota_clinica)}" if prioridade_motivo or nota_clinica else "Sem Nota Clínica"
             
         return doenca.lower(), prioridade, motivo_str
 
     def _doenca_para_especialidade(self, doenca: str) -> str:
         if doenca in DOENCA_TO_ESP: return DOENCA_TO_ESP[doenca]
-        k = ""; i = 0
-        while i < len(doenca): k = k + doenca[i]; i += 1
         if "cardio" in doenca or "angina" in doenca or "hipertens" in doenca or "arritm" in doenca: return "cardiologia"
         if "pneumo" in doenca or "asma" in doenca or "bronq" in doenca: return "pneumologia"
         if "diabet" in doenca or "endocrinologia" in doenca: return "endocrinologia"
@@ -339,73 +320,95 @@ class SimulacaoClinica:
     def run(self):
         self.reset()
         
+        # FIX: Verifica se há pacientes carregados (Obrigatoriedade do Dataset)
+        if not self.pacientes:
+            print("❌ Simulação abortada: Sem pacientes carregados. Verifique o dataset.")
+            return
+
         if self.arrival_pattern == "nonhomogeneous": self._gera_chegadas_nonhomogeneous()
         else: self._gera_chegadas_homogeneo()
 
-        self._filas[FALLBACK_ESP] = {"urgente": [], "normal": []}
+        # FIX: Inicialização da fila simplificada
+        self._filas[FALLBACK_ESP] = [] 
 
         while self._heap:
             tempo, _, tipo, pid = heapq.heappop(self._heap)
             
             if tipo == CHEGADA:
                 pidx = self._pid_to_pidx.get(pid, None)
-                pdata = self.pacientes[pidx] if pidx is not None and pidx < len(self.pacientes) else None
-                p_info = pdata.__dict__ if pdata is not None and not isinstance(pdata, dict) else (pdata if pdata is not None else {})
-                doenca, prioridade, motivo_str = self._detectar_doenca_e_prioridade(p_info)
-
-                especialidade_req = self._doenca_para_especialidade(doenca)
-
-                if pdata and pdata.morada and pdata.morada.get('distrito'): self.distritos_pacientes.append(pdata.morada['distrito'])
-                else: self.distritos_pacientes.append("Desconhecido")
-                     
-                if especialidade_req not in self._filas: self._filas[especialidade_req] = {"urgente": [], "normal": []}
-
-                medico_idx = None
-                j = 0
-                while j < len(self._medicos):
-                    m = self._medicos[j]
-                    is_compatible = (m["especialidade"] == especialidade_req) or (m["especialidade"] == FALLBACK_ESP)
-                    
-                    if m["livre"] and is_compatible: medico_idx = j; j = len(self._medicos)
-                    else: j += 1
                 
-                if medico_idx is None:
-                    k = 0
-                    while k < len(self._medicos):
-                        m2 = self._medicos[k]
-                        if m2["livre"] and m2["especialidade"] == FALLBACK_ESP: medico_idx = k; k = len(self._medicos)
-                        else: k += 1
+                if pidx is not None and pidx < len(self.pacientes): 
+                    pdata = self.pacientes[pidx]
+                    p_info = pdata.__dict__ if not isinstance(pdata, dict) else pdata
+                    doenca, prioridade, motivo_str = self._detectar_doenca_e_prioridade(p_info)
 
-                if medico_idx is not None:
-                    dur = self._gera_tempo_consulta_local(especialidade_req, pidx)
-                    
-                    if dur <= 0.001: dur = self.mean_service_time 
+                    especialidade_req = self._doenca_para_especialidade(doenca)
+
+                    if pdata.morada and pdata.morada.get('distrito'): self.distritos_pacientes.append(pdata.morada['distrito'])
+                    else: self.distritos_pacientes.append("Desconhecido")
                         
-                    self._inicio[pid] = tempo; self._duracao[pid] = dur; self._medicos[medico_idx]["livre"] = False; self._medicos[medico_idx]["fim"] = tempo + dur
-                    self._medicos[medico_idx]["num_atendidos"] += 1; self._medicos[medico_idx]["tempos_consulta"].append(dur)
-                    heapq.heappush(self._heap, (tempo + dur, next(self._counter), SAIDA, pid))
+                    # FIX: Inicialização da fila simplificada
+                    if especialidade_req not in self._filas: self._filas[especialidade_req] = []
+
+                    medico_idx = None
+                    j = 0
+                    found_compatible_doctor = False
                     
-                    nome = pdata.nome if pdata else "Paciente desconhecido"
-                    ev = {"minuto_inicio": int(math.floor(tempo)), "duracao": dur, "medico": medico_idx, "paciente": f"{nome} ({motivo_str})", "especialidade": especialidade_req, "prioridade": prioridade, "motivo": motivo_str}
-                    self.eventos.append(ev)
+                    # Procura 1: Compatível e Livre
+                    while j < len(self._medicos):
+                        m = self._medicos[j]
+                        is_compatible = (m["especialidade"] == especialidade_req) or (m["especialidade"] == FALLBACK_ESP)
+                        
+                        if m["livre"] and is_compatible and not found_compatible_doctor: 
+                            medico_idx = j
+                            found_compatible_doctor = True 
+                        
+                        j += 1
                     
-                    last = self._medicos[medico_idx].get("last_event_time", 0.0)
-                    if tempo > last: ocioso_calculado = True 
-                    self._medicos[medico_idx]["last_event_time"] = tempo
-                else:
-                    if prioridade == "urgente": self._filas[especialidade_req]["urgente"].append(pid)
-                    else: self._filas[especialidade_req]["normal"].append(pid)
-                    
-                    nome = pdata.nome if pdata else "Paciente desconhecido"
-                    self.eventos.append({"minuto_inicio": int(math.floor(tempo)), "duracao": 0.0, "medico": None, "paciente": f"{nome} ({motivo_str})", "especialidade": especialidade_req, "prioridade": prioridade, "motivo": motivo_str})
+                    # Procura 2: Generalista Livre (Fallback), se ainda não encontrou
+                    k = 0
+                    if not found_compatible_doctor:
+                        found_fallback_doctor = False
+                        while k < len(self._medicos):
+                            m2 = self._medicos[k]
+                            if m2["livre"] and m2["especialidade"] == FALLBACK_ESP and not found_fallback_doctor: 
+                                medico_idx = k
+                                found_fallback_doctor = True
+                            k += 1
+
+                    if medico_idx is not None:
+                        # Paciente ATENDIDO IMEDIATAMENTE
+                        dur = self._gera_tempo_consulta_local(especialidade_req, pidx)
+                        
+                        if dur <= 0.001: dur = self.mean_service_time 
+                            
+                        self._inicio[pid] = tempo; self._duracao[pid] = dur; self._medicos[medico_idx]["livre"] = False; self._medicos[medico_idx]["fim"] = tempo + dur
+                        self._medicos[medico_idx]["num_atendidos"] += 1; self._medicos[medico_idx]["tempos_consulta"].append(dur)
+                        heapq.heappush(self._heap, (tempo + dur, next(self._counter), SAIDA, pid))
+                        
+                        nome = pdata.nome
+                        ev = {"minuto_inicio": int(math.floor(tempo)), "duracao": dur, "medico": medico_idx, "paciente": f"{nome} ({motivo_str})", "especialidade": especialidade_req, "prioridade": prioridade, "motivo": motivo_str}
+                        self.eventos.append(ev)
+                        
+                        self._medicos[medico_idx]["last_event_time"] = tempo
+                    else:
+                        # Paciente VAI PARA A FILA (FIFO)
+                        self._filas[especialidade_req].append(pid)
+                        
+                        nome = pdata.nome
+                        self.eventos.append({"minuto_inicio": int(math.floor(tempo)), "duracao": 0.0, "medico": None, "paciente": f"{nome} ({motivo_str})", "especialidade": especialidade_req, "prioridade": prioridade, "motivo": motivo_str})
             
 
             elif tipo == SAIDA:
-                found_idx = None; kk = 0
-                while kk < len(self._medicos):
+                found_idx = None
+                kk = 0
+                doctor_found = False
+                while kk < len(self._medicos) and not doctor_found:
                     m = self._medicos[kk]
-                    if (not m["livre"]) and (abs(m["fim"] - tempo) <= 1e-4): found_idx = kk; kk = len(self._medicos)
-                    else: kk += 1
+                    if (not m["livre"]) and (abs(m["fim"] - tempo) <= 1e-4): 
+                        found_idx = kk
+                        doctor_found = True
+                    kk += 1
 
                 self._saida[pid] = tempo; self.doentes_atendidos += 1
 
@@ -413,26 +416,32 @@ class SimulacaoClinica:
                     dur_local = self._duracao.get(pid, 0.0); self._medicos[found_idx]["total_tempo_ocupado"] += dur_local; self._medicos[found_idx]["livre"] = True
                     self._medicos[found_idx]["last_event_time"] = tempo
 
-                    esp_med = self._medicos[found_idx].get("especialidade", FALLBACK_ESP); prox_pid = None; keys = list(self._filas.keys())
+                    esp_med = self._medicos[found_idx].get("especialidade", FALLBACK_ESP); prox_pid = None; keys = sorted(list(self._filas.keys())) 
                     
-                    if esp_med in self._filas and len(self._filas[esp_med]["urgente"]) > 0: prox_pid = self._filas[esp_med]["urgente"].pop(0)
-                    if prox_pid is None and esp_med in self._filas and len(self._filas[esp_med]["normal"]) > 0: prox_pid = self._filas[esp_med]["normal"].pop(0)
+                    found_next_patient = False
+                    
+                    # 1. Tenta encontrar na fila da especialidade do médico (FIFO)
+                    if esp_med in self._filas and len(self._filas[esp_med]) > 0: 
+                        prox_pid = self._filas[esp_med].pop(0) # FIFO
+                        found_next_patient = True
                         
-                    if prox_pid is None:
-                        i2 = 0
-                        while i2 < len(keys) and prox_pid is None:
-                            kf = keys[i2]
-                            if kf != esp_med and len(self._filas[kf]["urgente"]) > 0: prox_pid = self._filas[kf]["urgente"].pop(0)
-                            i2 += 1
+                    # 2. Tenta encontrar na fila de outras especialidades (FIFO)
+                    i2 = 0
+                    while i2 < len(keys) and not found_next_patient:
+                        kf = keys[i2]
+                        if kf != esp_med and len(self._filas.get(kf, [])) > 0: 
+                            prox_pid = self._filas[kf].pop(0) # FIFO
+                            found_next_patient = True
+                        i2 += 1
                     
-                    if prox_pid is None:
-                        i3 = 0
-                        while i3 < len(keys) and prox_pid is None:
-                            kf2 = keys[i3]
-                            if kf2 != esp_med and len(self._filas[kf2]["normal"]) > 0: prox_pid = self._filas[kf2]["normal"].pop(0)
-                            i3 += 1
+                    # 3. Tenta encontrar na fila do FALLBACK (FIFO)
+                    if not found_next_patient and FALLBACK_ESP in self._filas and len(self._filas[FALLBACK_ESP]) > 0:
+                        prox_pid = self._filas[FALLBACK_ESP].pop(0)
+                        found_next_patient = True
+
 
                     if prox_pid is not None:
+                        # Próximo paciente INICIA ATENDIMENTO
                         pidx2 = self._pid_to_pidx.get(prox_pid, None)
                         pdata2 = self.pacientes[pidx2] if pidx2 is not None and pidx2 < len(self.pacientes) else None
                         p_info2 = pdata2.__dict__ if pdata2 is not None and not isinstance(pdata2, dict) else (pdata2 if pdata2 is not None else {})
@@ -445,13 +454,12 @@ class SimulacaoClinica:
                         self._medicos[found_idx]["num_atendidos"] += 1; self._medicos[found_idx]["tempos_consulta"].append(dur2)
                         heapq.heappush(self._heap, (tempo + dur2, next(self._counter), SAIDA, prox_pid))
                         
-                        nome2 = pdata2.nome if pdata2 else "Paciente desconhecido"
+                        nome2 = pdata2.nome if pdata2 else "Paciente desconhecido (ERRO)"
                         self.eventos.append({"minuto_inicio": int(math.floor(tempo)), "duracao": dur2, "medico": found_idx, "paciente": f"{nome2} ({motivo_str2})", "especialidade": esp_final, "prioridade": prioridade2, "motivo": motivo_str2})
                     else:
-                        medico_ficou_livre = True
-                else:
-                    saida_sem_medico = True
+                        pass
             
+        # O cálculo das filas e ocupação continua aqui
         minuto = 0
         while minuto < self.simulation_time:
             chegada_count = 0; inicio_count = 0
@@ -461,7 +469,6 @@ class SimulacaoClinica:
                 if tcheg <= minuto:
                     chegada_count += 1
                     if tin is not None and tin <= minuto: inicio_count += 1
-                    else: nao_atendido_no_minuto = True
                 ik += 1
             fila_atual = chegada_count - inicio_count
             if fila_atual < 0: fila_atual = 0
